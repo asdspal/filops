@@ -1,0 +1,247 @@
+// Prisma schema for FilOps
+// Based on SRD data model specifications
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// User model
+model User {
+  id             String    @id @default(uuid())
+  email          String    @unique
+  walletAddress  String?   @unique @map("wallet_address")
+  role           UserRole  @default(DEVELOPER)
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  // Relations
+  projects       Project[]
+  auditLogs      AuditLog[]
+
+  @@map("users")
+}
+
+enum UserRole {
+  ADMIN
+  OPERATOR
+  DEVELOPER
+  VIEWER
+}
+
+// Project model
+model Project {
+  id          String    @id @default(uuid())
+  ownerId     String    @map("owner_id")
+  name        String
+  description String?
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  // Relations
+  owner       User      @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  policies    Policy[]
+  datasets    Dataset[]
+  agents      AgentInstance[]
+  alerts      Alert[]
+
+  @@map("projects")
+}
+
+// Policy model
+model Policy {
+  id          String    @id @default(uuid())
+  projectId   String    @map("project_id")
+  name        String
+  version     Int       @default(1)
+  docJson     Json      @map("doc_json") // Full policy document as JSON
+  active      Boolean   @default(false)
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  // Relations
+  project     Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  agents      AgentInstance[]
+
+  @@unique([projectId, name, version])
+  @@map("policies")
+}
+
+// Dataset model
+model Dataset {
+  id          String    @id @default(uuid())
+  projectId   String    @map("project_id")
+  cid         String    @unique
+  sizeBytes   BigInt    @map("size_bytes")
+  name        String?
+  metadata    Json?
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  // Relations
+  project     Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  deals       Deal[]
+
+  @@map("datasets")
+}
+
+// Deal model
+model Deal {
+  id          String    @id @default(uuid())
+  datasetId   String    @map("dataset_id")
+  providerId  String    @map("provider_id")
+  region      String?
+  startAt     DateTime  @map("start_at")
+  expiryAt    DateTime  @map("expiry_at")
+  status      DealStatus @default(PENDING)
+  dealId      String?   @unique @map("deal_id") // On-chain deal ID
+  price       Decimal?  @db.Decimal(20, 6)
+  collateral  Decimal?  @db.Decimal(20, 6)
+  metadata    Json?
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  // Relations
+  dataset     Dataset   @relation(fields: [datasetId], references: [id], onDelete: Cascade)
+
+  @@index([datasetId])
+  @@index([providerId])
+  @@index([expiryAt])
+  @@index([status])
+  @@map("deals")
+}
+
+enum DealStatus {
+  PENDING
+  ACTIVE
+  EXPIRED
+  FAILED
+  RENEWED
+}
+
+// Agent Instance model
+model AgentInstance {
+  id              String        @id @default(uuid())
+  type            AgentType
+  projectId       String        @map("project_id")
+  policyId        String?       @map("policy_id")
+  status          AgentStatus   @default(CREATED)
+  config          Json?
+  lastHeartbeat   DateTime?     @map("last_heartbeat")
+  createdAt       DateTime      @default(now()) @map("created_at")
+  updatedAt       DateTime      @updatedAt @map("updated_at")
+
+  // Relations
+  project         Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  policy          Policy?       @relation(fields: [policyId], references: [id], onDelete: SetNull)
+  actions         AgentAction[]
+
+  @@index([projectId])
+  @@index([status])
+  @@map("agent_instances")
+}
+
+enum AgentType {
+  RBA
+  PRA
+  PAA
+}
+
+enum AgentStatus {
+  CREATED
+  RUNNING
+  PAUSED
+  ERROR
+  STOPPED
+}
+
+// Agent Action model (for tracking agent decisions and executions)
+model AgentAction {
+  id          String        @id @default(uuid())
+  agentId     String        @map("agent_id")
+  actionType  String        @map("action_type")
+  status      ActionStatus  @default(PROPOSED)
+  payload     Json
+  result      Json?
+  error       String?
+  txHash      String?       @map("tx_hash")
+  createdAt   DateTime      @default(now()) @map("created_at")
+  updatedAt   DateTime      @updatedAt @map("updated_at")
+
+  // Relations
+  agent       AgentInstance @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@index([agentId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("agent_actions")
+}
+
+enum ActionStatus {
+  PROPOSED
+  APPROVED
+  EXECUTING
+  EXECUTED
+  FAILED
+  ROLLED_BACK
+}
+
+// Alert model
+model Alert {
+  id          String        @id @default(uuid())
+  projectId   String        @map("project_id")
+  severity    AlertSeverity
+  summary     String
+  detailsJson Json          @map("details_json")
+  status      AlertStatus   @default(OPEN)
+  source      String?       // Agent ID or system component
+  createdAt   DateTime      @default(now()) @map("created_at")
+  updatedAt   DateTime      @updatedAt @map("updated_at")
+  acknowledgedAt DateTime?  @map("acknowledged_at")
+  resolvedAt  DateTime?     @map("resolved_at")
+
+  // Relations
+  project     Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([severity])
+  @@index([status])
+  @@index([createdAt])
+  @@map("alerts")
+}
+
+enum AlertSeverity {
+  CRITICAL
+  WARNING
+  INFO
+}
+
+enum AlertStatus {
+  OPEN
+  ACKNOWLEDGED
+  RESOLVED
+}
+
+// Audit Log model
+model AuditLog {
+  id          String    @id @default(uuid())
+  actorId     String    @map("actor_id")
+  action      String
+  resource    String
+  resourceId  String?   @map("resource_id")
+  txHash      String?   @map("tx_hash")
+  metadata    Json?
+  timestamp   DateTime  @default(now())
+
+  // Relations
+  actor       User      @relation(fields: [actorId], references: [id], onDelete: Cascade)
+
+  @@index([actorId])
+  @@index([resource])
+  @@index([timestamp])
+  @@map("audit_logs")
+}
